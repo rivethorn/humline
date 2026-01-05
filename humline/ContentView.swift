@@ -31,20 +31,23 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(SidebarItem.allCases, selection: $selection) {
+            List(SidebarItem.allCases, id: \.self, selection: $selection) {
                 Label($0.title, systemImage: $0.systemImage)
-            }
+                    .tag($0)
+        }
             .navigationTitle("humline")
             .listStyle(.sidebar)
         } detail: {
             Group {
-                switch selection ?? .main {
+                switch selection {
                 case .main:
                     mainView
                 case .favorites:
                     favoritesView
                 case .nowPlaying:
                     nowPlayingView
+                case .none:
+                    mainView
                 }
             }
             .navigationTitle(selection?.title ?? "Main")
