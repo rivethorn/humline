@@ -39,12 +39,15 @@ final class StreamPlayer: ObservableObject {
         }
         
         do {
-            print("🌐 Fetching playlist from: \(playlistURL)")
             let (data, response) = try await URLSession.shared.data(from: playlistURL)
-            print("📥 Response status: \((response as? HTTPURLResponse)?.statusCode ?? 0)")
-            let content = String(data: data, encoding: .utf8) ?? ""
-            print("📄 Playlist content length: \(content.count) characters")
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                await MainActor.run {
+                    errorMessage = "HTTP error fetching playlist"
+                }
+                return
+            }
             
+            let content = String(data: data, encoding: .utf8) ?? ""
             guard let streamURL = parsePLSContent(content) else {
                 await MainActor.run {
                     errorMessage = "Failed to parse playlist"
@@ -53,7 +56,6 @@ final class StreamPlayer: ObservableObject {
             }
             
             await MainActor.run {
-                print("🎧 Creating AVPlayer with URL: \(streamURL)")
                 playerItem = AVPlayerItem(url: streamURL)
                 player = AVPlayer(playerItem: playerItem)
                 
@@ -67,10 +69,8 @@ final class StreamPlayer: ObservableObject {
                 
                 player?.play()
                 isPlaying = true
-                print("✅ Player started successfully")
             }
         } catch {
-            print("❌ Error fetching playlist: \(error)")
             await MainActor.run {
                 errorMessage = error.localizedDescription
             }
@@ -83,12 +83,10 @@ final class StreamPlayer: ObservableObject {
         for line in lines {
             if line.hasPrefix("File1=") {
                 let urlString = String(line.dropFirst(6))
-                print("🎵 Found stream URL: \(urlString)")
                 return URL(string: urlString)
             }
         }
         
-        print("❌ No File1 found in playlist content: \(content)")
         return nil
     }
 
