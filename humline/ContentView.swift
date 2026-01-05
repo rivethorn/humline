@@ -10,6 +10,7 @@ import SwiftUI
 enum SidebarItem: String, CaseIterable, Identifiable {
     case main = "Main"
     case favorites = "Favorites"
+    case nowPlaying = "Now Playing"
 
     var id: String { rawValue }
     var title: String { rawValue }
@@ -17,6 +18,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         switch self {
         case .main: return "music.note.list"
         case .favorites: return "star"
+        case .nowPlaying: return "play.circle"
         }
     }
 }
@@ -25,6 +27,7 @@ struct ContentView: View {
     @StateObject private var player = StreamPlayer()
     @StateObject private var apiManager = APIManager()
     @State private var selection: SidebarItem? = .main
+    @State private var currentPlayingChannel: Channel?
 
     var body: some View {
         NavigationSplitView {
@@ -40,9 +43,17 @@ struct ContentView: View {
                     mainView
                 case .favorites:
                     favoritesView
+                case .nowPlaying:
+                    nowPlayingView
                 }
             }
             .navigationTitle(selection?.title ?? "Main")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            // Auto-navigate to now playing when a channel starts
+            if player.isPlaying && selection != .nowPlaying {
+                selection = .nowPlaying
+            }
         }
     }
 
@@ -93,7 +104,12 @@ struct ContentView: View {
                         GridItem(.adaptive(minimum: 300, maximum: 400))
                     ], spacing: 16) {
                         ForEach(apiManager.channels) { channel in
-                            ChannelCard(channel: channel, player: player)
+                            ChannelCard(channel: channel, player: player, onPlay: { selectedChannel in
+                                currentPlayingChannel = selectedChannel
+                                if player.isPlaying {
+                                    selection = .nowPlaying
+                                }
+                            })
                         }
                     }
                     .padding()
@@ -106,18 +122,83 @@ struct ContentView: View {
     }
 
     private var favoritesView: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "star.fill")
-                .font(.largeTitle)
-                .foregroundStyle(.yellow)
-            Text("Favorites")
-                .font(.title2)
-                .bold()
-            Text("You don't have any favorites yet.")
-                .foregroundStyle(.secondary)
+        ScrollView {
+            VStack(spacing: 12) {
+                Image(systemName: "star.fill")
+                    .font(.largeTitle)
+                    .foregroundStyle(.yellow)
+                Text("Favorites")
+                    .font(.title2)
+                    .bold()
+                Text("Coming soon...")
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding()
+        }
+    }
+    
+    private var nowPlayingView: some View {
+        VStack(spacing: 24) {
+            if player.isPlaying && currentPlayingChannel != nil {
+                VStack(spacing: 20) {
+                    AsyncImage(url: currentPlayingChannel?.largeimage) { image in
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } placeholder: {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.gray.opacity(0.3))
+                            .frame(height: 120)
+                    }
+                    .frame(width: 120, height: 120)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    
+                    Text(currentPlayingChannel?.title ?? "")
+                        .font(.title)
+                        .bold()
+                        .multilineTextAlignment(.center)
+                    
+                    Text(currentPlayingChannel?.description ?? "")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                    
+                    Button(action: {
+                        player.stop()
+                        currentPlayingChannel = nil
+                        selection = .main
+                    }) {
+                        HStack {
+                            Image(systemName: "stop.fill")
+                            Text("Stop")
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                }
+                .padding()
+            } else {
+                VStack(spacing: 12) {
+                    Image(systemName: "play.slash")
+                        .font(.system(size: 60))
+                        .foregroundColor(.gray)
+                    
+                    Text("Nothing Playing")
+                        .font(.title2)
+                        .bold()
+                        .foregroundStyle(.tertiary)
+                    
+                    Text("Select a channel to start listening")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .contentShape(Rectangle())
     }
 }
 
@@ -125,13 +206,14 @@ struct ChannelCard: View {
     let channel: Channel
     @ObservedObject var player: StreamPlayer
     @State private var isLoading = false
+    let onPlay: (Channel) -> Void
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            AsyncImage(url: channel.xlimage) { image in
+            AsyncImage(url: channel.largeimage) { image in
                 image
                     .resizable()
-                    .aspectRatio(contentMode: .fit)
+                    .aspectRatio(contentMode: .fill)
             } placeholder: {
                 Rectangle()
                     .fill(Color.gray.opacity(0.3))
@@ -139,8 +221,8 @@ struct ChannelCard: View {
                         ProgressView()
                     }
             }
-            .frame(height:380)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .frame(height: 120)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
             
             VStack(alignment: .leading, spacing: 4) {
                 Text(channel.title)
@@ -202,11 +284,9 @@ struct ChannelCard: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
             }
-            .cornerRadius(100)
+            .buttonStyle(.borderedProminent)
             .disabled(isLoading)
             .controlSize(.small)
-            .glassEffect(.clear.tint(.accentColor).interactive())
-            
         }
         .padding()
         .background(Color(.controlBackgroundColor))
