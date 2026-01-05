@@ -8,93 +8,103 @@
 
 import Foundation
 import Combine
-import ChunkedAudioPlayer
 import AVFoundation
 
 final class StreamPlayer: ObservableObject {
     @Published var isPlaying = false
     @Published var errorMessage: String?
-
-    private let url = URL(string: "http://ice1.somafm.com/groovesalad-128-mp3")! // SomaFM Groove Salad [web:8]
-    private let player = AudioPlayer()                                            // from ChunkedAudioPlayer [web:7]
+    @Published var currentChannelTitle: String?
+    
+    private var player: AVPlayer?
+    private var playerItem: AVPlayerItem?
     private var bag = Set<AnyCancellable>()
-    private var task: Task<Void, Never>?
+    private var timeObserver: Any?
 
     init() {
-        player.$currentState
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in
-                self?.isPlaying = (state == .playing)
-            }
-            .store(in: &bag)
-
-        player.$currentError
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] err in
-                self?.errorMessage = err?.localizedDescription
-            }
-            .store(in: &bag)
+        // No audio session setup needed for macOS
     }
 
-    func toggle() {
-        if isPlaying {
+    func toggle(channel: any Identifiable & Sendable, title: String, playlistURL: URL) async {
+        if isPlaying && currentChannelTitle == title {
             stop()
         } else {
-            start()
+            await start(title: title, playlistURL: playlistURL)
         }
     }
 
-    func start() {
-        guard task == nil else { return }
-
-        // Simple async byte stream from URLSession
-        task = Task {
-            do {
-                let (bytes, response) = try await URLSession.shared.bytes(from: url)
-                guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                    await MainActor.run {
-                        self.errorMessage = "HTTP error"
-                    }
-                    return
+    func start(title: String, playlistURL: URL) async {
+        await MainActor.run {
+            currentChannelTitle = title
+            errorMessage = nil
+        }
+        
+        do {
+            print("🌐 Fetching playlist from: \(playlistURL)")
+            let (data, response) = try await URLSession.shared.data(from: playlistURL)
+            print("📥 Response status: \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+            let content = String(data: data, encoding: .utf8) ?? ""
+            print("📄 Playlist content length: \(content.count) characters")
+            
+            guard let streamURL = parsePLSContent(content) else {
+                await MainActor.run {
+                    errorMessage = "Failed to parse playlist"
                 }
-
-                let stream = AsyncThrowingStream<Data, Error>(bufferingPolicy: .unbounded) { (continuation: AsyncThrowingStream<Data, Error>.Continuation) in
-                    Task.detached {
-                        do {
-                            var buffer = Data()
-                            buffer.reserveCapacity(4096)
-                            for try await byte in bytes {
-                                buffer.append(byte)
-                                if buffer.count >= 4096 {
-                                    continuation.yield(buffer)
-                                    buffer.removeAll(keepingCapacity: true)
-                                }
-                            }
-                            if !buffer.isEmpty {
-                                continuation.yield(buffer)
-                            }
-                            continuation.finish()
-                        } catch {
-                            continuation.finish(throwing: error)
+                return
+            }
+            
+            await MainActor.run {
+                print("🎧 Creating AVPlayer with URL: \(streamURL)")
+                playerItem = AVPlayerItem(url: streamURL)
+                player = AVPlayer(playerItem: playerItem)
+                
+                NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)
+                    .sink { [weak self] _ in
+                        Task { @MainActor in
+                            self?.stop()
                         }
                     }
-                }
-
-                // MP3 stream type hint for the player [web:7]
-                player.start(stream, type: kAudioFileMP3Type)
-            } catch {
-                await MainActor.run {
-                    self.errorMessage = error.localizedDescription
-                }
+                    .store(in: &bag)
+                
+                player?.play()
+                isPlaying = true
+                print("✅ Player started successfully")
+            }
+        } catch {
+            print("❌ Error fetching playlist: \(error)")
+            await MainActor.run {
+                errorMessage = error.localizedDescription
             }
         }
+    }
+    
+    private func parsePLSContent(_ content: String) -> URL? {
+        let lines = content.components(separatedBy: .newlines)
+        
+        for line in lines {
+            if line.hasPrefix("File1=") {
+                let urlString = String(line.dropFirst(6))
+                print("🎵 Found stream URL: \(urlString)")
+                return URL(string: urlString)
+            }
+        }
+        
+        print("❌ No File1 found in playlist content: \(content)")
+        return nil
     }
 
     func stop() {
-        task?.cancel()
-        task = nil
-        player.stop()
+        player?.pause()
+        player?.replaceCurrentItem(with: nil)
+        player = nil
+        playerItem = nil
+        
+        if let timeObserver = timeObserver {
+            player?.removeTimeObserver(timeObserver)
+            self.timeObserver = nil
+        }
+        
         isPlaying = false
+        currentChannelTitle = nil
     }
 }
 
